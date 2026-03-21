@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Penrose Checkers</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; color: #eee; font-family: monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; flex-wrap: wrap; }
+header h1 { font-size: 1.1rem; color: #e94560; }
+#status-bar { font-size: 0.8rem; color: #ccc; }
+#status-bar .gold { color: #f0c040; }
+#status-bar .teal { color: #40c0c0; }
+#seed-display { font-size: 0.75rem; color: #888; }
+#seed-val { color: #f0e68c; }
+header a { color: #a8dadc; text-decoration: none; font-size: 0.8rem; margin-left: auto; }
+header a:hover { text-decoration: underline; }
+button { background: #0f3460; color: #eee; border: 1px solid #e94560; padding: 4px 10px; cursor: pointer; font-family: monospace; font-size: 0.8rem; border-radius: 3px; }
+button:hover { background: #e94560; }
+main { display: flex; flex: 1; overflow: hidden; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { display: block; }
+#sidebar { width: 220px; background: #16213e; border-left: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
+#sidebar h2 { font-size: 0.85rem; color: #a8dadc; padding: 8px 10px; border-bottom: 1px solid #0f3460; }
+#log { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 0.72rem; line-height: 1.7; }
+#log .gold { color: #f0c040; }
+#log .teal { color: #40c0c0; }
+#log .capture { color: #e94560; font-size: 0.68rem; }
+#win-banner { display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); align-items: center; justify-content: center; flex-direction: column; gap: 16px; z-index: 10; }
+#win-banner.show { display: flex; }
+#win-banner h2 { font-size: 2rem; }
+#win-banner.gold-win h2 { color: #f0c040; }
+#win-banner.teal-win h2 { color: #40c0c0; }
+#setup-modal { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 20; }
+#setup-box { background: #16213e; border: 1px solid #0f3460; padding: 28px 36px; text-align: center; }
+#setup-box h2 { color: #a8dadc; margin-bottom: 16px; }
+#setup-box label { display: block; margin: 8px 0; cursor: pointer; }
+#setup-box .btn-row { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
+#setup-box button { font-size: 1rem; padding: 8px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Penrose Checkers</h1>
+  <span id="status-bar">—</span>
+  <span id="seed-display">Seed: <span id="seed-val"></span></span>
+  <button id="btn-new-seed">New Seed</button>
+  <a href="index.html">← Demo</a>
+</header>
+<main>
+  <div id="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div id="win-banner">
+      <h2 id="win-text"></h2>
+      <button id="btn-play-again">Play Again</button>
+    </div>
+    <div id="setup-modal">
+      <div id="setup-box">
+        <h2>Penrose Checkers</h2>
+        <p style="margin-bottom:14px;color:#aaa;font-size:0.85rem">Choose game mode:</p>
+        <label><input type="radio" name="mode" value="2p" checked> Two Player (hot-seat)</label>
+        <label><input type="radio" name="mode" value="ai"> vs AI (you play Gold)</label>
+        <div class="btn-row">
+          <button id="btn-start">Start Game</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="sidebar">
+    <h2>Move Log</h2>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  Shared tiling code (same as index.html)
+// ══════════════════════════════════════════════════════
+const PHI = (1 + Math.sqrt(5)) / 2;
+
+function add(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
+function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
+function scale(v,s){ return {x:v.x*s, y:v.y*s}; }
+
+function deflate(tiles) {
+  const next = [];
+  for (const t of tiles) {
+    const [A, B, C] = t.pts;
+    if (t.type === 'kite') {
+      const P = add(A, scale(sub(B, A), 1/PHI));
+      const Q = add(B, scale(sub(C, B), 1/PHI));
+      next.push({type:'kite', pts:[Q, P, B]});
+      next.push({type:'kite', pts:[Q, C, A]});
+      next.push({type:'dart', pts:[P, A, Q]});
+    } else {
+      const P = add(A, scale(sub(B, A), 1/PHI));
+      next.push({type:'kite', pts:[B, C, P]});
+      next.push({type:'dart', pts:[C, A, P]});
+    }
+  }
+  return next;
+}
+
+function makeSunCorrect() {
+  const tiles = [];
+  for (let i = 0; i < 10; i++) {
+    const a1 = i * 2 * Math.PI / 10;
+    const a2 = (i+1) * 2 * Math.PI / 10;
+    tiles.push({type:'kite', pts:[
+      {x:0,y:0},
+      {x:Math.cos(a1),y:Math.sin(a1)},
+      {x:Math.cos(a2),y:Math.sin(a2)}
+    ]});
+  }
+  return tiles;
+}
+
+function generateTiling(seed, iters=6) {
+  let tiles = makeSunCorrect();
+  for (let i = 0; i < iters; i++) tiles = deflate(tiles);
+  tiles.forEach((t,i) => t.id = i);
+  return tiles;
+}
+
+const EPS = 1e-6;
+function buildGraph(tiles) {
+  function edgeKey(p,q) {
+    const [a,b] = p.x < q.x || (Math.abs(p.x-q.x)<EPS && p.y<q.y) ? [p,q] : [q,p];
+    return `${a.x.toFixed(7)},${a.y.toFixed(7)}|${b.x.toFixed(7)},${b.y.toFixed(7)}`;
+  }
+  const edgeMap = new Map();
+  for (const t of tiles) {
+    const pts = t.pts;
+    for (let i = 0; i < pts.length; i++) {
+      const key = edgeKey(pts[i], pts[(i+1)%pts.length]);
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(t.id);
+    }
+  }
+  const adj = new Map();
+  for (const t of tiles) adj.set(t.id, new Set());
+  for (const ids of edgeMap.values()) {
+    if (ids.length === 2) {
+      adj.get(ids[0]).add(ids[1]);
+      adj.get(ids[1]).add(ids[0]);
+    }
+  }
+  return adj;
+}
+
+// ══════════════════════════════════════════════════════
+//  Rendering helpers
+// ══════════════════════════════════════════════════════
+function centroid(pts){ return {x:pts.reduce((s,p)=>s+p.x,0)/pts.length, y:pts.reduce((s,p)=>s+p.y,0)/pts.length}; }
+function sign(px,py,a,b){ return (px-b.x)*(a.y-b.y)-(a.x-b.x)*(py-b.y); }
+function pointInTri(px,py,pts) {
+  const [a,b,c]=pts;
+  const d1=sign(px,py,a,b),d2=sign(px,py,b,c),d3=sign(px,py,c,a);
+  return !((d1<0||d2<0||d3<0)&&(d1>0||d2>0||d3>0));
+}
+
+// ══════════════════════════════════════════════════════
+//  Game state
+// ══════════════════════════════════════════════════════
+let canvas, ctx, tiles, adj, transform;
+let pieces = []; // {id, team, type, tileId, captured, captureFlash}
+let currentTeam = 'A'; // 'A'=gold, 'B'=teal
+let selectedPieceId = null;
+let reachable = new Set();
+let turnCount = 1;
+let gameMode = '2p'; // '2p' or 'ai'
+let gameOver = false;
+let aiThinking = false;
+// tile ownership for tinting: Map<tileId, {team, turnSet}>
+let tileOwnership = new Map();
+let currentTurn = 1;
+
+const PIECE_TYPES = [
+  {type:'Scout',  steps:3},
+  {type:'Scout',  steps:3},
+  {type:'Soldier',steps:2},
+  {type:'Guard',  steps:1},
+];
+
+function teamColor(team){ return team==='A' ? '#f0c040' : '#40c0c0'; }
+function teamName(team){ return team==='A' ? 'Gold' : 'Teal'; }
+function teamClass(team){ return team==='A' ? 'gold' : 'teal'; }
+
+// ── Piece placement ───────────────────────────────────
+function placePieces() {
+  // Split tiles into left/right halves by x centroid for initial placement
+  const tileList = tiles.filter(t => adj.get(t.id) && adj.get(t.id).size >= 1);
+  const withCx = tileList.map(t => ({t, cx:centroid(t.pts).x}));
+  withCx.sort((a,b)=>a.cx-b.cx);
+  const n = withCx.length;
+  // Team A (gold) on left quarter, Team B (teal) on right quarter
+  const aPool = withCx.slice(0, Math.floor(n*0.25)).map(x=>x.t);
+  const bPool = withCx.slice(Math.floor(n*0.75)).map(x=>x.t);
+
+  // spread pieces evenly in their pool
+  function pickSpread(pool, count) {
+    const step = Math.floor(pool.length / (count+1));
+    const ids = [];
+    for (let i=0;i<count;i++) ids.push(pool[step*(i+1)].id);
+    return ids;
+  }
+
+  const aTiles = pickSpread(aPool, 4);
+  const bTiles = pickSpread(bPool, 4);
+
+  pieces = [];
+  let pid = 0;
+  PIECE_TYPES.forEach((p,i) => {
+    pieces.push({id:pid++, team:'A', type:p.type, steps:p.steps, tileId:aTiles[i], captured:false, captureFlash:0});
+  });
+  PIECE_TYPES.forEach((p,i) => {
+    pieces.push({id:pid++, team:'B', type:p.type, steps:p.steps, tileId:bTiles[i], captured:false, captureFlash:0});
+  });
+  tileOwnership.clear();
+  currentTurn = 1;
+}
+
+// ── BFS reachable tiles ───────────────────────────────
+function getReachable(tileId, maxSteps) {
+  const visited = new Map(); // tileId→dist
+  visited.set(tileId, 0);
+  const queue = [tileId];
+  const result = new Set();
+  while (queue.length) {
+    const cur = queue.shift();
+    const dist = visited.get(cur);
+    if (dist >= maxSteps) continue;
+    for (const nb of adj.get(cur)) {
+      if (!visited.has(nb)) {
+        visited.set(nb, dist+1);
+        queue.push(nb);
+        result.add(nb);
+      }
+    }
+  }
+  result.delete(tileId);
+  return result;
+}
+
+// ── Capture check ─────────────────────────────────────
+function checkCaptures(movedTeam) {
+  const captured = [];
+  for (const p of pieces) {
+    if (p.captured) continue;
+    const neighbors = adj.get(p.tileId);
+    if (!neighbors) continue;
+    const total = neighbors.size;
+    let enemyCount = 0;
+    for (const nb of neighbors) {
+      const occ = pieces.find(q => !q.captured && q.tileId === nb);
+      if (occ && occ.team !== p.team) enemyCount++;
+    }
+    if (enemyCount > total / 2) {
+      captured.push(p);
+    }
+  }
+  return captured;
+}
+
+// ── Move execution ────────────────────────────────────
+function executeMove(piece, destTileId) {
+  const fromTile = piece.tileId;
+  piece.tileId = destTileId;
+  // update ownership
+  tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
+
+  // capture check
+  const captured = checkCaptures(piece.team);
+  const captureDesc = [];
+  for (const cp of captured) {
+    cp.captured = true;
+    cp.captureFlash = Date.now();
+    captureDesc.push(`${teamName(cp.team)} ${cp.type} #${cp.tileId}`);
+  }
+
+  // log
+  let entry = `T${currentTurn} · <span class="${teamClass(piece.team)}">${teamName(piece.team)} ${piece.type}</span> → #${destTileId}`;
+  if (captureDesc.length) entry += `<br><span class="capture"> ✕ ${captureDesc.join(', ')}</span>`;
+  logEntry(entry);
+
+  // decay ownership
+  for (const [tid, ow] of tileOwnership) {
+    if (currentTurn - ow.turnSet > 5) tileOwnership.delete(tid);
+  }
+
+  currentTurn++;
+
+  // check win
+  const aAlive = pieces.filter(p=>!p.captured&&p.team==='A').length;
+  const bAlive = pieces.filter(p=>!p.captured&&p.team==='B').length;
+  if (aAlive===0||bAlive===0) {
+    setTimeout(()=>showWin(aAlive===0?'B':'A'), 300);
+    gameOver = true;
+  }
+
+  return captured.length;
+}
+
+function showWin(team) {
+  const banner = document.getElementById('win-banner');
+  banner.className = 'show ' + (team==='A'?'gold-win':'teal-win');
+  document.getElementById('win-text').textContent = teamName(team) + ' Wins!';
+}
+
+// ── AI ────────────────────────────────────────────────
+function evalMove(piece, destId) {
+  // simulate move
+  const origTile = piece.tileId;
+  piece.tileId = destId;
+  // captures after move
+  const captured = checkCaptures('B');
+  const capEnemy = captured.filter(p=>p.team==='A').length;
+  // vulnerable own pieces
+  const ownVuln = pieces.filter(p=>!p.captured&&p.team==='B').filter(p=>{
+    const nb=adj.get(p.tileId); if(!nb) return false;
+    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='A')ec++; }
+    return ec>nb.size/2;
+  }).length;
+  // enemy vulnerable
+  const enVuln = pieces.filter(p=>!p.captured&&p.team==='A').filter(p=>{
+    const nb=adj.get(p.tileId); if(!nb) return false;
+    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='B')ec++; }
+    return ec>nb.size/2;
+  }).length;
+  piece.tileId = origTile;
+  return {capEnemy, ownVuln, enVuln};
+}
+
+function aiTurn() {
+  const myPieces = pieces.filter(p=>!p.captured&&p.team==='B');
+  let best = null, bestScore = null;
+  for (const p of myPieces) {
+    const reach = getReachable(p.tileId, p.steps);
+    for (const dest of reach) {
+      const sc = evalMove(p, dest);
+      if (!bestScore ||
+          sc.capEnemy > bestScore.capEnemy ||
+          (sc.capEnemy===bestScore.capEnemy && sc.ownVuln < bestScore.ownVuln) ||
+          (sc.capEnemy===bestScore.capEnemy && sc.ownVuln===bestScore.ownVuln && sc.enVuln > bestScore.enVuln)) {
+        best = {piece:p, dest};
+        bestScore = sc;
+      }
+    }
+  }
+  if (best) {
+    executeMove(best.piece, best.dest);
+    currentTeam = 'A';
+    selectedPieceId = null;
+    reachable = new Set();
+    aiThinking = false;
+    updateStatus();
+    drawBoard();
+  }
+}
+
+// ── Input handling ────────────────────────────────────
+function handleClick(sx, sy) {
+  if (gameOver || aiThinking) return;
+  if (gameMode === 'ai' && currentTeam === 'B') return;
+
+  const wp = screenToWorld({x:sx,y:sy});
+  let clickedTile = null;
+  for (let i=tiles.length-1;i>=0;i--) {
+    if (pointInTri(wp.x,wp.y,tiles[i].pts)) { clickedTile=tiles[i]; break; }
+  }
+  if (!clickedTile) return;
+  const tid = clickedTile.id;
+
+  // clicking a reachable tile → move selected piece
+  if (selectedPieceId !== null && reachable.has(tid)) {
+    const p = pieces.find(q=>q.id===selectedPieceId);
+    executeMove(p, tid);
+    selectedPieceId = null;
+    reachable = new Set();
+    if (!gameOver) {
+      currentTeam = currentTeam==='A'?'B':'A';
+      updateStatus();
+      if (gameMode==='ai' && currentTeam==='B') {
+        aiThinking = true;
+        setTimeout(aiTurn, 600);
+      }
+    }
+    drawBoard();
+    return;
+  }
+
+  // clicking own piece → select it
+  const clicked = pieces.find(p=>!p.captured&&p.tileId===tid&&p.team===currentTeam);
+  if (clicked) {
+    selectedPieceId = clicked.id;
+    reachable = getReachable(tid, clicked.steps);
+    drawBoard();
+    return;
+  }
+
+  // clicking elsewhere → deselect
+  selectedPieceId = null;
+  reachable = new Set();
+  drawBoard();
+}
+
+// ── Drawing ───────────────────────────────────────────
+function computeTransform(W,H) {
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for (const t of tiles) for (const p of t.pts) {
+    minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+    minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y);
+  }
+  const pad=30, sx=(W-2*pad)/(maxX-minX), sy=(H-2*pad)/(maxY-minY);
+  const s=Math.min(sx,sy);
+  return {s, ox:pad+((W-2*pad)-(maxX-minX)*s)/2-minX*s,
+             oy:pad+((H-2*pad)-(maxY-minY)*s)/2-minY*s};
+}
+function worldToScreen(p){ return {x:p.x*transform.s+transform.ox, y:p.y*transform.s+transform.oy}; }
+function screenToWorld(p){ return {x:(p.x-transform.ox)/transform.s, y:(p.y-transform.oy)/transform.s}; }
+
+function tileBaseFill(t) {
+  const ow = tileOwnership.get(t.id);
+  if (!ow) return t.type==='kite'?'#2d4a7a':'#3d2a5a';
+  const base = t.type==='kite'?[45,74,122]:[61,42,90];
+  const tint = ow.team==='A'?[240,192,64]:[64,192,192];
+  const a=0.25;
+  const r=Math.round(base[0]*(1-a)+tint[0]*a);
+  const g=Math.round(base[1]*(1-a)+tint[1]*a);
+  const b2=Math.round(base[2]*(1-a)+tint[2]*a);
+  return `rgb(${r},${g},${b2})`;
+}
+
+function drawBoard() {
+  const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const selPiece = selectedPieceId!==null ? pieces.find(p=>p.id===selectedPieceId) : null;
+
+  for (const t of tiles) {
+    const pts = t.pts.map(worldToScreen);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x,pts[0].y);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+    ctx.closePath();
+
+    if (selPiece && t.id===selPiece.tileId) {
+      ctx.fillStyle='#e94560';
+    } else if (reachable.has(t.id)) {
+      ctx.fillStyle='rgba(200,240,100,0.45)';
+    } else {
+      ctx.fillStyle=tileBaseFill(t);
+    }
+    ctx.fill();
+    ctx.strokeStyle=t.type==='kite'?'#4a7ab5':'#7a4ab5';
+    ctx.lineWidth=0.5;
+    ctx.stroke();
+  }
+
+  // draw pieces
+  const now = Date.now();
+  for (const p of pieces) {
+    if (p.captured) {
+      // flash out
+      const elapsed = now - p.captureFlash;
+      if (elapsed < 400) {
+        const sc = tiles[p.tileId];
+        if (!sc) continue;
+        const cpt = centroid(sc.pts.map(worldToScreen));
+        const alpha = 1 - elapsed/400;
+        ctx.globalAlpha = alpha;
+        drawPiece(ctx, p, cpt);
+        ctx.globalAlpha = 1;
+      }
+      continue;
+    }
+    const t = tiles[p.tileId];
+    if (!t) continue;
+    const cpt = centroid(t.pts.map(worldToScreen));
+    drawPiece(ctx, p, cpt);
+  }
+
+  // redraw if any flash still active
+  if (pieces.some(p=>p.captured && (now-p.captureFlash)<400)) {
+    requestAnimationFrame(drawBoard);
+  }
+}
+
+function drawPiece(ctx, p, pos) {
+  const r = Math.max(4, transform.s * 0.12);
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, r, 0, 2*Math.PI);
+  ctx.fillStyle = teamColor(p.team);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // icon by type
+  ctx.fillStyle='#111';
+  ctx.font = `bold ${Math.max(6,r*0.9)}px monospace`;
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  const icon = p.type==='Scout'?'S':p.type==='Soldier'?'K':'G';
+  ctx.fillText(icon, pos.x, pos.y);
+}
+
+function logEntry(html) {
+  const log = document.getElementById('log');
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function updateStatus() {
+  const aCount = pieces.filter(p=>!p.captured&&p.team==='A').length;
+  const bCount = pieces.filter(p=>!p.captured&&p.team==='B').length;
+  document.getElementById('status-bar').innerHTML =
+    `<span class="${teamClass(currentTeam)}">${teamName(currentTeam)}'s turn</span> &nbsp;|&nbsp; ` +
+    `<span class="gold">Gold: ${aCount}</span> &nbsp; <span class="teal">Teal: ${bCount}</span>`;
+}
+
+// ── Init ──────────────────────────────────────────────
+function initGame(seed) {
+  document.getElementById('seed-val').textContent = seed;
+  window.location.hash = 'seed='+seed;
+  tiles = generateTiling(seed, 6);
+  adj = buildGraph(tiles);
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  transform = computeTransform(canvas.width, canvas.height);
+  placePieces();
+  currentTeam='A';
+  selectedPieceId=null;
+  reachable=new Set();
+  gameOver=false;
+  aiThinking=false;
+  document.getElementById('log').innerHTML='';
+  document.getElementById('win-banner').className='';
+  updateStatus();
+  drawBoard();
+}
+
+function resize() {
+  if (!tiles) return;
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  transform = computeTransform(canvas.width, canvas.height);
+  drawBoard();
+}
+
+window.addEventListener('load', () => {
+  canvas = document.getElementById('canvas');
+  ctx = canvas.getContext('2d');
+  window.addEventListener('resize', resize);
+
+  canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = (e.clientX-rect.left)*canvas.width/rect.width;
+    const sy = (e.clientY-rect.top)*canvas.height/rect.height;
+    handleClick(sx,sy);
+  });
+
+  document.getElementById('btn-start').addEventListener('click', () => {
+    gameMode = document.querySelector('input[name=mode]:checked').value;
+    document.getElementById('setup-modal').style.display='none';
+    let seed='';
+    const hash=window.location.hash.replace('#','');
+    const m=hash.match(/seed=([^&]+)/);
+    seed = m ? decodeURIComponent(m[1]) : Math.random().toString(36).slice(2,8);
+    initGame(seed);
+  });
+
+  document.getElementById('btn-new-seed').addEventListener('click', () => {
+    const s=Math.random().toString(36).slice(2,8);
+    initGame(s);
+  });
+
+  document.getElementById('btn-play-again').addEventListener('click', () => {
+    const seed = document.getElementById('seed-val').textContent;
+    document.getElementById('log').innerHTML='';
+    tiles = generateTiling(seed, 6);
+    adj = buildGraph(tiles);
+    placePieces();
+    currentTeam='A'; selectedPieceId=null; reachable=new Set();
+    gameOver=false; aiThinking=false;
+    document.getElementById('win-banner').className='';
+    updateStatus();
+    drawBoard();
+  });
+});
+</script>
+</body>
+</html>
