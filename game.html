@@ -6,7 +6,7 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #1a1a2e; color: #eee; font-family: monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; flex-wrap: wrap; }
+header { position: relative; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; flex-wrap: wrap; }
 header h1 { font-size: 1.1rem; color: #e94560; }
 #status-bar { font-size: 0.8rem; color: #ccc; }
 #status-bar .gold { color: #f0c040; }
@@ -37,6 +37,20 @@ canvas { display: block; }
 #setup-box label { display: block; margin: 8px 0; cursor: pointer; }
 #setup-box .btn-row { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
 #setup-box button { font-size: 1rem; padding: 8px 20px; }
+/* Settings panel */
+#settings-panel {
+  display: none; position: absolute; top: 100%; right: 0;
+  background: #16213e; border: 1px solid #0f3460; border-top: none;
+  padding: 14px 18px; z-index: 100; min-width: 240px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#settings-panel.open { display: block; }
+#settings-panel h3 { color: #a8dadc; font-size: 0.85rem; margin-bottom: 10px; border-bottom: 1px solid #0f3460; padding-bottom: 6px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 0.8rem; gap: 12px; }
+.setting-row label { color: #ccc; white-space: nowrap; }
+.setting-row select { background: #0f3460; color: #eee; border: 1px solid #4a7ab5; padding: 3px 6px; font-family: monospace; font-size: 0.78rem; cursor: pointer; }
+.setting-row input[type=checkbox] { cursor: pointer; accent-color: #e94560; width: 14px; height: 14px; }
+.setting-note { color: #888; font-size: 0.72rem; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -45,7 +59,26 @@ canvas { display: block; }
   <span id="status-bar">—</span>
   <span id="seed-display">Seed: <span id="seed-val"></span></span>
   <button id="btn-new-seed">New Seed</button>
+  <button id="btn-settings">⚙ Settings</button>
   <a href="index.html">← Demo</a>
+
+  <div id="settings-panel">
+    <h3>Settings</h3>
+    <div class="setting-row">
+      <label for="sel-iters">Tile density</label>
+      <select id="sel-iters">
+        <option value="3">~200 tiles</option>
+        <option value="4">~550 tiles</option>
+        <option value="5">~1500 tiles</option>
+        <option value="6" selected>~3800 tiles</option>
+      </select>
+    </div>
+    <div class="setting-note">Takes effect on next new game.</div>
+    <div class="setting-row" style="margin-top:10px;">
+      <label for="chk-graph">Show adjacency graph</label>
+      <input type="checkbox" id="chk-graph">
+    </div>
+  </div>
 </header>
 <main>
   <div id="canvas-wrap">
@@ -74,10 +107,9 @@ canvas { display: block; }
 
 <script>
 // ══════════════════════════════════════════════════════
-//  Shared tiling code (same as index.html)
+//  Tiling
 // ══════════════════════════════════════════════════════
 const PHI = (1 + Math.sqrt(5)) / 2;
-
 function add(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
 function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
 function scale(v,s){ return {x:v.x*s, y:v.y*s}; }
@@ -115,7 +147,7 @@ function makeSunCorrect() {
   return tiles;
 }
 
-function generateTiling(seed, iters=6) {
+function generateTiling(iters) {
   let tiles = makeSunCorrect();
   for (let i = 0; i < iters; i++) tiles = deflate(tiles);
   tiles.forEach((t,i) => t.id = i);
@@ -149,7 +181,7 @@ function buildGraph(tiles) {
 }
 
 // ══════════════════════════════════════════════════════
-//  Rendering helpers
+//  Helpers
 // ══════════════════════════════════════════════════════
 function centroid(pts){ return {x:pts.reduce((s,p)=>s+p.x,0)/pts.length, y:pts.reduce((s,p)=>s+p.y,0)/pts.length}; }
 function sign(px,py,a,b){ return (px-b.x)*(a.y-b.y)-(a.x-b.x)*(py-b.y); }
@@ -163,17 +195,17 @@ function pointInTri(px,py,pts) {
 //  Game state
 // ══════════════════════════════════════════════════════
 let canvas, ctx, tiles, adj, transform;
-let pieces = []; // {id, team, type, tileId, captured, captureFlash}
-let currentTeam = 'A'; // 'A'=gold, 'B'=teal
+let pieces = [];
+let currentTeam = 'A';
 let selectedPieceId = null;
 let reachable = new Set();
-let turnCount = 1;
-let gameMode = '2p'; // '2p' or 'ai'
+let gameMode = '2p';
 let gameOver = false;
 let aiThinking = false;
-// tile ownership for tinting: Map<tileId, {team, turnSet}>
 let tileOwnership = new Map();
 let currentTurn = 1;
+let deflateIters = 6;
+let showGraph = false;
 
 const PIECE_TYPES = [
   {type:'Scout',  steps:3},
@@ -188,16 +220,13 @@ function teamClass(team){ return team==='A' ? 'gold' : 'teal'; }
 
 // ── Piece placement ───────────────────────────────────
 function placePieces() {
-  // Split tiles into left/right halves by x centroid for initial placement
   const tileList = tiles.filter(t => adj.get(t.id) && adj.get(t.id).size >= 1);
   const withCx = tileList.map(t => ({t, cx:centroid(t.pts).x}));
   withCx.sort((a,b)=>a.cx-b.cx);
   const n = withCx.length;
-  // Team A (gold) on left quarter, Team B (teal) on right quarter
   const aPool = withCx.slice(0, Math.floor(n*0.25)).map(x=>x.t);
   const bPool = withCx.slice(Math.floor(n*0.75)).map(x=>x.t);
 
-  // spread pieces evenly in their pool
   function pickSpread(pool, count) {
     const step = Math.floor(pool.length / (count+1));
     const ids = [];
@@ -220,9 +249,9 @@ function placePieces() {
   currentTurn = 1;
 }
 
-// ── BFS reachable tiles ───────────────────────────────
+// ── BFS reachable ─────────────────────────────────────
 function getReachable(tileId, maxSteps) {
-  const visited = new Map(); // tileId→dist
+  const visited = new Map();
   visited.set(tileId, 0);
   const queue = [tileId];
   const result = new Set();
@@ -243,7 +272,7 @@ function getReachable(tileId, maxSteps) {
 }
 
 // ── Capture check ─────────────────────────────────────
-function checkCaptures(movedTeam) {
+function checkCaptures() {
   const captured = [];
   for (const p of pieces) {
     if (p.captured) continue;
@@ -255,22 +284,17 @@ function checkCaptures(movedTeam) {
       const occ = pieces.find(q => !q.captured && q.tileId === nb);
       if (occ && occ.team !== p.team) enemyCount++;
     }
-    if (enemyCount > total / 2) {
-      captured.push(p);
-    }
+    if (enemyCount > total / 2) captured.push(p);
   }
   return captured;
 }
 
 // ── Move execution ────────────────────────────────────
 function executeMove(piece, destTileId) {
-  const fromTile = piece.tileId;
   piece.tileId = destTileId;
-  // update ownership
   tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
 
-  // capture check
-  const captured = checkCaptures(piece.team);
+  const captured = checkCaptures();
   const captureDesc = [];
   for (const cp of captured) {
     cp.captured = true;
@@ -278,26 +302,21 @@ function executeMove(piece, destTileId) {
     captureDesc.push(`${teamName(cp.team)} ${cp.type} #${cp.tileId}`);
   }
 
-  // log
   let entry = `T${currentTurn} · <span class="${teamClass(piece.team)}">${teamName(piece.team)} ${piece.type}</span> → #${destTileId}`;
   if (captureDesc.length) entry += `<br><span class="capture"> ✕ ${captureDesc.join(', ')}</span>`;
   logEntry(entry);
 
-  // decay ownership
   for (const [tid, ow] of tileOwnership) {
     if (currentTurn - ow.turnSet > 5) tileOwnership.delete(tid);
   }
-
   currentTurn++;
 
-  // check win
   const aAlive = pieces.filter(p=>!p.captured&&p.team==='A').length;
   const bAlive = pieces.filter(p=>!p.captured&&p.team==='B').length;
   if (aAlive===0||bAlive===0) {
     setTimeout(()=>showWin(aAlive===0?'B':'A'), 300);
     gameOver = true;
   }
-
   return captured.length;
 }
 
@@ -309,19 +328,15 @@ function showWin(team) {
 
 // ── AI ────────────────────────────────────────────────
 function evalMove(piece, destId) {
-  // simulate move
   const origTile = piece.tileId;
   piece.tileId = destId;
-  // captures after move
-  const captured = checkCaptures('B');
+  const captured = checkCaptures();
   const capEnemy = captured.filter(p=>p.team==='A').length;
-  // vulnerable own pieces
   const ownVuln = pieces.filter(p=>!p.captured&&p.team==='B').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
     let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='A')ec++; }
     return ec>nb.size/2;
   }).length;
-  // enemy vulnerable
   const enVuln = pieces.filter(p=>!p.captured&&p.team==='A').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
     let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='B')ec++; }
@@ -371,7 +386,6 @@ function handleClick(sx, sy) {
   if (!clickedTile) return;
   const tid = clickedTile.id;
 
-  // clicking a reachable tile → move selected piece
   if (selectedPieceId !== null && reachable.has(tid)) {
     const p = pieces.find(q=>q.id===selectedPieceId);
     executeMove(p, tid);
@@ -389,7 +403,6 @@ function handleClick(sx, sy) {
     return;
   }
 
-  // clicking own piece → select it
   const clicked = pieces.find(p=>!p.captured&&p.tileId===tid&&p.team===currentTeam);
   if (clicked) {
     selectedPieceId = clicked.id;
@@ -398,7 +411,6 @@ function handleClick(sx, sy) {
     return;
   }
 
-  // clicking elsewhere → deselect
   selectedPieceId = null;
   reachable = new Set();
   drawBoard();
@@ -425,10 +437,7 @@ function tileBaseFill(t) {
   const base = t.type==='kite'?[45,74,122]:[61,42,90];
   const tint = ow.team==='A'?[240,192,64]:[64,192,192];
   const a=0.25;
-  const r=Math.round(base[0]*(1-a)+tint[0]*a);
-  const g=Math.round(base[1]*(1-a)+tint[1]*a);
-  const b2=Math.round(base[2]*(1-a)+tint[2]*a);
-  return `rgb(${r},${g},${b2})`;
+  return `rgb(${Math.round(base[0]*(1-a)+tint[0]*a)},${Math.round(base[1]*(1-a)+tint[1]*a)},${Math.round(base[2]*(1-a)+tint[2]*a)})`;
 }
 
 function drawBoard() {
@@ -437,6 +446,7 @@ function drawBoard() {
 
   const selPiece = selectedPieceId!==null ? pieces.find(p=>p.id===selectedPieceId) : null;
 
+  // Draw tiles
   for (const t of tiles) {
     const pts = t.pts.map(worldToScreen);
     ctx.beginPath();
@@ -447,7 +457,8 @@ function drawBoard() {
     if (selPiece && t.id===selPiece.tileId) {
       ctx.fillStyle='#e94560';
     } else if (reachable.has(t.id)) {
-      ctx.fillStyle='rgba(200,240,100,0.45)';
+      // Vivid green-yellow highlight for reachable destinations
+      ctx.fillStyle='rgba(140,255,60,0.72)';
     } else {
       ctx.fillStyle=tileBaseFill(t);
     }
@@ -457,18 +468,61 @@ function drawBoard() {
     ctx.stroke();
   }
 
-  // draw pieces
+  // Draw additional bright border on reachable tiles so they pop on small tiles
+  if (reachable.size > 0) {
+    ctx.strokeStyle='rgba(160,255,80,0.9)';
+    ctx.lineWidth=1.5;
+    for (const rid of reachable) {
+      const t = tiles[rid];
+      if (!t) continue;
+      const pts = t.pts.map(worldToScreen);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x,pts[0].y);
+      for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
+  // Draw adjacency graph overlay
+  if (showGraph) {
+    const drawn = new Set();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    for (const t of tiles) {
+      const cA = centroid(t.pts.map(worldToScreen));
+      for (const nid of adj.get(t.id)) {
+        const key = t.id < nid ? t.id*1000000+nid : nid*1000000+t.id;
+        if (drawn.has(key)) continue;
+        drawn.add(key);
+        const nt = tiles[nid];
+        const cB = centroid(nt.pts.map(worldToScreen));
+        ctx.moveTo(cA.x, cA.y);
+        ctx.lineTo(cB.x, cB.y);
+      }
+    }
+    ctx.stroke();
+    // Node dots
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    for (const t of tiles) {
+      const c = centroid(t.pts.map(worldToScreen));
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 1.4, 0, 2*Math.PI);
+      ctx.fill();
+    }
+  }
+
+  // Draw pieces
   const now = Date.now();
   for (const p of pieces) {
     if (p.captured) {
-      // flash out
       const elapsed = now - p.captureFlash;
       if (elapsed < 400) {
         const sc = tiles[p.tileId];
         if (!sc) continue;
         const cpt = centroid(sc.pts.map(worldToScreen));
-        const alpha = 1 - elapsed/400;
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = 1 - elapsed/400;
         drawPiece(ctx, p, cpt);
         ctx.globalAlpha = 1;
       }
@@ -476,11 +530,9 @@ function drawBoard() {
     }
     const t = tiles[p.tileId];
     if (!t) continue;
-    const cpt = centroid(t.pts.map(worldToScreen));
-    drawPiece(ctx, p, cpt);
+    drawPiece(ctx, p, centroid(t.pts.map(worldToScreen)));
   }
 
-  // redraw if any flash still active
   if (pieces.some(p=>p.captured && (now-p.captureFlash)<400)) {
     requestAnimationFrame(drawBoard);
   }
@@ -495,13 +547,11 @@ function drawPiece(ctx, p, pos) {
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 1;
   ctx.stroke();
-  // icon by type
   ctx.fillStyle='#111';
   ctx.font = `bold ${Math.max(6,r*0.9)}px monospace`;
   ctx.textAlign='center';
   ctx.textBaseline='middle';
-  const icon = p.type==='Scout'?'S':p.type==='Soldier'?'K':'G';
-  ctx.fillText(icon, pos.x, pos.y);
+  ctx.fillText(p.type==='Scout'?'S':p.type==='Soldier'?'K':'G', pos.x, pos.y);
 }
 
 function logEntry(html) {
@@ -524,18 +574,15 @@ function updateStatus() {
 function initGame(seed) {
   document.getElementById('seed-val').textContent = seed;
   window.location.hash = 'seed='+seed;
-  tiles = generateTiling(seed, 6);
+  tiles = generateTiling(deflateIters);
   adj = buildGraph(tiles);
   const wrap = document.getElementById('canvas-wrap');
   canvas.width = wrap.clientWidth;
   canvas.height = wrap.clientHeight;
   transform = computeTransform(canvas.width, canvas.height);
   placePieces();
-  currentTeam='A';
-  selectedPieceId=null;
-  reachable=new Set();
-  gameOver=false;
-  aiThinking=false;
+  currentTeam='A'; selectedPieceId=null; reachable=new Set();
+  gameOver=false; aiThinking=false;
   document.getElementById('log').innerHTML='';
   document.getElementById('win-banner').className='';
   updateStatus();
@@ -558,30 +605,30 @@ window.addEventListener('load', () => {
 
   canvas.addEventListener('click', e => {
     const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX-rect.left)*canvas.width/rect.width;
-    const sy = (e.clientY-rect.top)*canvas.height/rect.height;
-    handleClick(sx,sy);
+    handleClick(
+      (e.clientX-rect.left)*canvas.width/rect.width,
+      (e.clientY-rect.top)*canvas.height/rect.height
+    );
   });
 
+  // Setup modal
   document.getElementById('btn-start').addEventListener('click', () => {
     gameMode = document.querySelector('input[name=mode]:checked').value;
     document.getElementById('setup-modal').style.display='none';
-    let seed='';
     const hash=window.location.hash.replace('#','');
     const m=hash.match(/seed=([^&]+)/);
-    seed = m ? decodeURIComponent(m[1]) : Math.random().toString(36).slice(2,8);
+    const seed = m ? decodeURIComponent(m[1]) : Math.random().toString(36).slice(2,8);
     initGame(seed);
   });
 
   document.getElementById('btn-new-seed').addEventListener('click', () => {
-    const s=Math.random().toString(36).slice(2,8);
-    initGame(s);
+    initGame(Math.random().toString(36).slice(2,8));
   });
 
   document.getElementById('btn-play-again').addEventListener('click', () => {
     const seed = document.getElementById('seed-val').textContent;
     document.getElementById('log').innerHTML='';
-    tiles = generateTiling(seed, 6);
+    tiles = generateTiling(deflateIters);
     adj = buildGraph(tiles);
     placePieces();
     currentTeam='A'; selectedPieceId=null; reachable=new Set();
@@ -589,6 +636,29 @@ window.addEventListener('load', () => {
     document.getElementById('win-banner').className='';
     updateStatus();
     drawBoard();
+  });
+
+  // Settings panel toggle
+  const settingsPanel = document.getElementById('settings-panel');
+  document.getElementById('btn-settings').addEventListener('click', e => {
+    e.stopPropagation();
+    settingsPanel.classList.toggle('open');
+  });
+  document.addEventListener('click', e => {
+    if (!settingsPanel.contains(e.target) && e.target.id !== 'btn-settings') {
+      settingsPanel.classList.remove('open');
+    }
+  });
+
+  // Tile density (takes effect on next new game)
+  document.getElementById('sel-iters').addEventListener('change', e => {
+    deflateIters = parseInt(e.target.value);
+  });
+
+  // Graph overlay toggle (instant)
+  document.getElementById('chk-graph').addEventListener('change', e => {
+    showGraph = e.target.checked;
+    if (tiles) drawBoard();
   });
 });
 </script>
