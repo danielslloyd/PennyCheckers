@@ -71,7 +71,9 @@ canvas { display: block; width: 100%; height: 100%; }
   </div>
 </main>
 <script>
-// ── Penrose P2 via kite/dart deflation ───────────────────────────────────────
+// ── Penrose P2 via Robinson triangle (half-tile) deflation ───────────────────
+// Each tile is a half-kite (acute, 36-72-72) or half-dart (obtuse, 108-36-36).
+// Deflation rules follow the standard Robinson triangle subdivision.
 const PHI = (1 + Math.sqrt(5)) / 2;
 
 function add(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
@@ -83,36 +85,44 @@ function deflate(tiles) {
   for (const t of tiles) {
     const [A, B, C] = t.pts;
     if (t.type === 'kite') {
+      // Acute half-kite (36-72-72): A is first vertex.
+      // P splits AB in ratio 1 : 1/φ from A.
+      // Produces 1 kite + 1 dart.
       const P = add(A, scale(sub(B, A), 1/PHI));
-      const Q = add(B, scale(sub(C, B), 1/PHI));
-      next.push({type:'kite', pts:[Q, P, B]});
-      next.push({type:'kite', pts:[Q, C, A]});
-      next.push({type:'dart', pts:[P, A, Q]});
+      next.push({type:'kite', pts:[C, P, B]});
+      next.push({type:'dart', pts:[P, C, A]});
     } else {
-      const P = add(A, scale(sub(B, A), 1/PHI));
-      next.push({type:'kite', pts:[B, C, P]});
-      next.push({type:'dart', pts:[C, A, P]});
+      // Obtuse half-dart (108-36-36): A is first vertex.
+      // Q on BA, R on BC — both at distance 1/φ of their edge from B.
+      // Produces 2 darts + 1 kite.
+      const Q = add(B, scale(sub(A, B), 1/PHI));
+      const R = add(B, scale(sub(C, B), 1/PHI));
+      next.push({type:'dart', pts:[R, C, A]});
+      next.push({type:'dart', pts:[Q, R, B]});
+      next.push({type:'kite', pts:[R, Q, A]});
     }
   }
   return next;
 }
 
-function makeSunCorrect() {
+// Sun = 5 kites = 10 half-kite triangles around the centre.
+// Adjacent triangles alternate which outer vertex is B vs C so each pair
+// subdivides toward their shared outer vertex, keeping the tiling gapless.
+function makeSun() {
   const tiles = [];
   for (let i = 0; i < 10; i++) {
     const a1 = i * 2 * Math.PI / 10;
-    const a2 = (i+1) * 2 * Math.PI / 10;
-    tiles.push({type:'kite', pts:[
-      {x:0,y:0},
-      {x:Math.cos(a1), y:Math.sin(a1)},
-      {x:Math.cos(a2), y:Math.sin(a2)}
-    ]});
+    const a2 = (i + 1) * 2 * Math.PI / 10;
+    let B = {x: Math.cos(a1), y: Math.sin(a1)};
+    let C = {x: Math.cos(a2), y: Math.sin(a2)};
+    if (i % 2 === 0) { const tmp = B; B = C; C = tmp; }
+    tiles.push({type:'kite', pts:[{x:0,y:0}, B, C]});
   }
   return tiles;
 }
 
 function generateTiling(iters) {
-  let tiles = makeSunCorrect();
+  let tiles = makeSun();
   for (let i = 0; i < iters; i++) tiles = deflate(tiles);
   tiles.forEach((t,i) => t.id = i);
   return tiles;
@@ -123,7 +133,7 @@ const EPS = 1e-6;
 function buildGraph(tiles) {
   function edgeKey(p,q) {
     const [a,b] = p.x < q.x || (Math.abs(p.x-q.x)<EPS && p.y<q.y) ? [p,q] : [q,p];
-    return `${a.x.toFixed(8)},${a.y.toFixed(8)}|${b.x.toFixed(8)},${b.y.toFixed(8)}`;
+    return `${a.x.toFixed(5)},${a.y.toFixed(5)}|${b.x.toFixed(5)},${b.y.toFixed(5)}`;
   }
   const edgeMap = new Map();
   for (const t of tiles) {
