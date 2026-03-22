@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Penrose Tiling Demo</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; color: #eee; font-family: monospace; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+header { position: relative; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+header h1 { font-size: 1.1rem; color: #e94560; }
+header a { color: #a8dadc; text-decoration: none; font-size: 0.85rem; margin-left: auto; }
+header a:hover { text-decoration: underline; }
+#seed-display { font-size: 0.8rem; color: #aaa; }
+#seed-val { color: #f0e68c; }
+button { background: #0f3460; color: #eee; border: 1px solid #e94560; padding: 4px 10px; cursor: pointer; font-family: monospace; font-size: 0.8rem; border-radius: 3px; }
+button:hover { background: #e94560; }
+main { display: flex; flex: 1; overflow: hidden; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { display: block; width: 100%; height: 100%; }
+#info-panel { width: 200px; background: #16213e; border-left: 1px solid #0f3460; padding: 12px; font-size: 0.8rem; flex-shrink: 0; }
+#info-panel h2 { color: #a8dadc; margin-bottom: 8px; font-size: 0.9rem; }
+#tile-info { color: #ccc; line-height: 1.7; }
+#tile-info .label { color: #888; }
+/* Settings panel */
+#settings-panel {
+  display: none; position: absolute; top: 100%; right: 0;
+  background: #16213e; border: 1px solid #0f3460; border-top: none;
+  padding: 14px 18px; z-index: 100; min-width: 230px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#settings-panel.open { display: block; }
+#settings-panel h3 { color: #a8dadc; font-size: 0.85rem; margin-bottom: 10px; border-bottom: 1px solid #0f3460; padding-bottom: 6px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 0.8rem; gap: 12px; }
+.setting-row label { color: #ccc; white-space: nowrap; }
+.setting-row select { background: #0f3460; color: #eee; border: 1px solid #4a7ab5; padding: 3px 6px; font-family: monospace; font-size: 0.78rem; cursor: pointer; }
+.setting-row input[type=checkbox] { cursor: pointer; accent-color: #e94560; width: 14px; height: 14px; }
+#tile-count-display { color: #f0e68c; font-size: 0.75rem; margin-top: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Penrose P2 Tiling</h1>
+  <span id="seed-display">Seed: <span id="seed-val"></span></span>
+  <button id="btn-new-seed">New Random Seed</button>
+  <button id="btn-settings">⚙ Settings</button>
+  <a href="game.html">Play Game →</a>
+
+  <div id="settings-panel">
+    <h3>Settings</h3>
+    <div class="setting-row">
+      <label for="sel-iters">Tile density</label>
+      <select id="sel-iters">
+        <option value="3">~200 tiles</option>
+        <option value="4">~550 tiles</option>
+        <option value="5">~1500 tiles</option>
+        <option value="6" selected>~3800 tiles</option>
+      </select>
+    </div>
+    <div id="tile-count-display"></div>
+    <div class="setting-row" style="margin-top:10px;">
+      <label for="chk-graph">Show adjacency graph</label>
+      <input type="checkbox" id="chk-graph">
+    </div>
+  </div>
+</header>
+<main>
+  <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+  <div id="info-panel">
+    <h2>Tile Info</h2>
+    <div id="tile-info">Click a tile to inspect it.</div>
+  </div>
+</main>
+<script>
+// ── Penrose P2 via kite/dart deflation ───────────────────────────────────────
+const PHI = (1 + Math.sqrt(5)) / 2;
+
+function add(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
+function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
+function scale(v,s){ return {x:v.x*s, y:v.y*s}; }
+
+function deflate(tiles) {
+  const next = [];
+  for (const t of tiles) {
+    const [A, B, C] = t.pts;
+    if (t.type === 'kite') {
+      const P = add(A, scale(sub(B, A), 1/PHI));
+      const Q = add(B, scale(sub(C, B), 1/PHI));
+      next.push({type:'kite', pts:[Q, P, B]});
+      next.push({type:'kite', pts:[Q, C, A]});
+      next.push({type:'dart', pts:[P, A, Q]});
+    } else {
+      const P = add(A, scale(sub(B, A), 1/PHI));
+      next.push({type:'kite', pts:[B, C, P]});
+      next.push({type:'dart', pts:[C, A, P]});
+    }
+  }
+  return next;
+}
+
+function makeSunCorrect() {
+  const tiles = [];
+  for (let i = 0; i < 10; i++) {
+    const a1 = i * 2 * Math.PI / 10;
+    const a2 = (i+1) * 2 * Math.PI / 10;
+    tiles.push({type:'kite', pts:[
+      {x:0,y:0},
+      {x:Math.cos(a1), y:Math.sin(a1)},
+      {x:Math.cos(a2), y:Math.sin(a2)}
+    ]});
+  }
+  return tiles;
+}
+
+function generateTiling(iters) {
+  let tiles = makeSunCorrect();
+  for (let i = 0; i < iters; i++) tiles = deflate(tiles);
+  tiles.forEach((t,i) => t.id = i);
+  return tiles;
+}
+
+// ── Adjacency graph ───────────────────────────────────────────────────────────
+const EPS = 1e-6;
+function buildGraph(tiles) {
+  function edgeKey(p,q) {
+    const [a,b] = p.x < q.x || (Math.abs(p.x-q.x)<EPS && p.y<q.y) ? [p,q] : [q,p];
+    return `${a.x.toFixed(8)},${a.y.toFixed(8)}|${b.x.toFixed(8)},${b.y.toFixed(8)}`;
+  }
+  const edgeMap = new Map();
+  for (const t of tiles) {
+    const pts = t.pts;
+    for (let i = 0; i < pts.length; i++) {
+      const key = edgeKey(pts[i], pts[(i+1)%pts.length]);
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(t.id);
+    }
+  }
+  const adj = new Map();
+  for (const t of tiles) adj.set(t.id, new Set());
+  for (const ids of edgeMap.values()) {
+    if (ids.length === 2) {
+      adj.get(ids[0]).add(ids[1]);
+      adj.get(ids[1]).add(ids[0]);
+    }
+  }
+  return adj;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const KITE_COLOR = '#2d4a7a';
+const DART_COLOR = '#3d2a5a';
+const KITE_STROKE = '#4a7ab5';
+const DART_STROKE = '#7a4ab5';
+
+let canvas, ctx, tiles, adj, selectedId, transform;
+let deflateIters = 6;
+let showGraph = false;
+
+function centroid(pts){ return {x:pts.reduce((s,p)=>s+p.x,0)/pts.length, y:pts.reduce((s,p)=>s+p.y,0)/pts.length}; }
+
+function computeTransform(W, H) {
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for (const t of tiles) for (const p of t.pts) {
+    minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+    minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y);
+  }
+  const pad = 30;
+  const sx = (W-2*pad)/(maxX-minX), sy = (H-2*pad)/(maxY-minY);
+  const s = Math.min(sx,sy);
+  return {s, ox:pad+((W-2*pad)-(maxX-minX)*s)/2-minX*s,
+             oy:pad+((H-2*pad)-(maxY-minY)*s)/2-minY*s};
+}
+
+function worldToScreen(p){ return {x:p.x*transform.s+transform.ox, y:p.y*transform.s+transform.oy}; }
+function screenToWorld(p){ return {x:(p.x-transform.ox)/transform.s, y:(p.y-transform.oy)/transform.s}; }
+
+function drawTiles(highlighted) {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  const neighbors = highlighted != null ? adj.get(highlighted) : null;
+
+  // Draw tiles
+  for (const t of tiles) {
+    const pts = t.pts.map(worldToScreen);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+    ctx.closePath();
+    if (t.id === highlighted) {
+      ctx.fillStyle = '#e94560';
+    } else if (neighbors && neighbors.has(t.id)) {
+      ctx.fillStyle = '#f0c040';
+    } else {
+      ctx.fillStyle = t.type==='kite' ? KITE_COLOR : DART_COLOR;
+    }
+    ctx.fill();
+    ctx.strokeStyle = t.type==='kite' ? KITE_STROKE : DART_STROKE;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+  }
+
+  // Draw adjacency graph overlay
+  if (showGraph) {
+    const drawn = new Set();
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    for (const t of tiles) {
+      const cA = centroid(t.pts.map(worldToScreen));
+      for (const nid of adj.get(t.id)) {
+        const key = t.id < nid ? t.id*1000000+nid : nid*1000000+t.id;
+        if (drawn.has(key)) continue;
+        drawn.add(key);
+        const nt = tiles[nid];
+        const cB = centroid(nt.pts.map(worldToScreen));
+        ctx.moveTo(cA.x, cA.y);
+        ctx.lineTo(cB.x, cB.y);
+      }
+    }
+    ctx.stroke();
+    // Draw node dots
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (const t of tiles) {
+      const c = centroid(t.pts.map(worldToScreen));
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 1.5, 0, 2*Math.PI);
+      ctx.fill();
+    }
+  }
+
+  // Draw selected-tile neighbor lines on top
+  if (highlighted != null && neighbors) {
+    const cA = centroid(tiles[highlighted].pts.map(worldToScreen));
+    ctx.strokeStyle = 'rgba(240,192,64,0.7)';
+    ctx.lineWidth = 1.5;
+    for (const nid of neighbors) {
+      const nt = tiles[nid];
+      if (!nt) continue;
+      const cB = centroid(nt.pts.map(worldToScreen));
+      ctx.beginPath();
+      ctx.moveTo(cA.x,cA.y); ctx.lineTo(cB.x,cB.y);
+      ctx.stroke();
+    }
+  }
+}
+
+function resize() {
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  if (tiles) {
+    transform = computeTransform(canvas.width, canvas.height);
+    drawTiles(selectedId);
+  }
+}
+
+function sign(px,py,a,b){ return (px-b.x)*(a.y-b.y)-(a.x-b.x)*(py-b.y); }
+function pointInTri(px,py,pts) {
+  const [a,b,c]=pts;
+  const d1=sign(px,py,a,b),d2=sign(px,py,b,c),d3=sign(px,py,c,a);
+  return !((d1<0||d2<0||d3<0)&&(d1>0||d2>0||d3>0));
+}
+
+function getTileAt(sx,sy) {
+  const wp = screenToWorld({x:sx,y:sy});
+  for (let i=tiles.length-1;i>=0;i--) {
+    if (pointInTri(wp.x,wp.y,tiles[i].pts)) return tiles[i];
+  }
+  return null;
+}
+
+function initFromSeed(seed) {
+  document.getElementById('seed-val').textContent = seed;
+  window.location.hash = 'seed=' + seed;
+  tiles = generateTiling(deflateIters);
+  adj = buildGraph(tiles);
+  selectedId = null;
+  transform = computeTransform(canvas.width, canvas.height);
+  drawTiles(null);
+  document.getElementById('tile-info').textContent = 'Click a tile to inspect it.';
+  document.getElementById('tile-count-display').textContent = `${tiles.length} tiles generated`;
+}
+
+window.addEventListener('load', () => {
+  canvas = document.getElementById('canvas');
+  ctx = canvas.getContext('2d');
+  window.addEventListener('resize', resize);
+  resize();
+
+  const hash = window.location.hash.replace('#','');
+  const m = hash.match(/seed=([^&]+)/);
+  const seed = m ? decodeURIComponent(m[1]) : Math.random().toString(36).slice(2,8);
+  initFromSeed(seed);
+
+  // Settings toggle
+  const settingsPanel = document.getElementById('settings-panel');
+  document.getElementById('btn-settings').addEventListener('click', e => {
+    e.stopPropagation();
+    settingsPanel.classList.toggle('open');
+  });
+  document.addEventListener('click', e => {
+    if (!settingsPanel.contains(e.target) && e.target.id !== 'btn-settings') {
+      settingsPanel.classList.remove('open');
+    }
+  });
+
+  // Tile density
+  document.getElementById('sel-iters').addEventListener('change', e => {
+    deflateIters = parseInt(e.target.value);
+    const s = document.getElementById('seed-val').textContent;
+    initFromSeed(s);
+  });
+
+  // Graph toggle
+  document.getElementById('chk-graph').addEventListener('change', e => {
+    showGraph = e.target.checked;
+    drawTiles(selectedId);
+  });
+
+  document.getElementById('btn-new-seed').addEventListener('click', () => {
+    initFromSeed(Math.random().toString(36).slice(2,8));
+  });
+
+  canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    const t = getTileAt(
+      (e.clientX-rect.left)*canvas.width/rect.width,
+      (e.clientY-rect.top)*canvas.height/rect.height
+    );
+    if (!t) return;
+    selectedId = t.id;
+    drawTiles(selectedId);
+    const ns = adj.get(t.id);
+    document.getElementById('tile-info').innerHTML =
+      `<span class="label">Type:</span> ${t.type}<br>` +
+      `<span class="label">ID:</span> #${t.id}<br>` +
+      `<span class="label">Neighbors:</span> ${ns ? ns.size : 0}`;
+  });
+});
+</script>
+</body>
+</html>
