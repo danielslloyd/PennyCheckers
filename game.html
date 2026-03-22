@@ -193,6 +193,16 @@ function pointInTri(px,py,pts) {
   const d1=sign(px,py,a,b),d2=sign(px,py,b,c),d3=sign(px,py,c,a);
   return !((d1<0||d2<0||d3<0)&&(d1>0||d2>0||d3>0));
 }
+// Inradius of a screen-space triangle (largest circle fitting inside)
+function inradius(pts) {
+  const [A,B,C] = pts;
+  const a = Math.hypot(B.x-C.x, B.y-C.y);
+  const b = Math.hypot(A.x-C.x, A.y-C.y);
+  const c = Math.hypot(A.x-B.x, A.y-B.y);
+  const s = (a+b+c)/2;
+  const area = Math.abs((B.x-A.x)*(C.y-A.y)-(C.x-A.x)*(B.y-A.y))/2;
+  return s > 0 ? area/s : 0;
+}
 
 // ══════════════════════════════════════════════════════
 //  Game state
@@ -274,36 +284,19 @@ function getReachable(tileId, maxSteps) {
   return result;
 }
 
-// ── Capture check ─────────────────────────────────────
-function checkCaptures() {
-  const captured = [];
-  for (const p of pieces) {
-    if (p.captured) continue;
-    const neighbors = adj.get(p.tileId);
-    if (!neighbors) continue;
-    const total = neighbors.size;
-    let enemyCount = 0;
-    for (const nb of neighbors) {
-      const occ = pieces.find(q => !q.captured && q.tileId === nb);
-      if (occ && occ.team !== p.team) enemyCount++;
-    }
-    if (enemyCount > total / 2) captured.push(p);
-  }
-  return captured;
-}
-
-// ── Move execution ────────────────────────────────────
+// ── Move execution (collision capture: landing on an enemy removes it) ────────
 function executeMove(piece, destTileId) {
-  piece.tileId = destTileId;
-  tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
-
-  const captured = checkCaptures();
+  // Capture any enemy pieces already on the destination tile
+  const captured = pieces.filter(q => !q.captured && q.team !== piece.team && q.tileId === destTileId);
   const captureDesc = [];
   for (const cp of captured) {
     cp.captured = true;
     cp.captureFlash = Date.now();
-    captureDesc.push(`${teamName(cp.team)} ${cp.type} #${cp.tileId}`);
+    captureDesc.push(`${teamName(cp.team)} ${cp.type}`);
   }
+
+  piece.tileId = destTileId;
+  tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
 
   let entry = `T${currentTurn} · <span class="${teamClass(piece.team)}">${teamName(piece.team)} ${piece.type}</span> → #${destTileId}`;
   if (captureDesc.length) entry += `<br><span class="capture"> ✕ ${captureDesc.join(', ')}</span>`;
@@ -332,18 +325,19 @@ function showWin(team) {
 // ── AI ────────────────────────────────────────────────
 function evalMove(piece, destId) {
   const origTile = piece.tileId;
+  // Immediate captures: enemies sitting on destination
+  const capEnemy = pieces.filter(q => !q.captured && q.team !== piece.team && q.tileId === destId).length;
+  // Simulate move to evaluate resulting board
   piece.tileId = destId;
-  const captured = checkCaptures();
-  const capEnemy = captured.filter(p=>p.team==='A').length;
+  // Pieces of ours adjacent to an enemy (threatened — enemy can land on us next turn)
   const ownVuln = pieces.filter(p=>!p.captured&&p.team==='B').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
-    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='A')ec++; }
-    return ec>nb.size/2;
+    return [...nb].some(nid=>pieces.find(q=>!q.captured&&q.team==='A'&&q.tileId===nid));
   }).length;
+  // Enemy pieces adjacent to one of ours (we can threaten them next turn)
   const enVuln = pieces.filter(p=>!p.captured&&p.team==='A').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
-    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='B')ec++; }
-    return ec>nb.size/2;
+    return [...nb].some(nid=>pieces.find(q=>!q.captured&&q.team==='B'&&q.tileId===nid));
   }).length;
   piece.tileId = origTile;
   return {capEnemy, ownVuln, enVuln};
@@ -516,7 +510,7 @@ function drawBoard() {
     }
   }
 
-  // Draw pieces
+  // Draw pieces — radius = 60% of tile's inscribed circle radius
   const now = Date.now();
   for (const p of pieces) {
     if (p.captured) {
@@ -524,16 +518,18 @@ function drawBoard() {
       if (elapsed < 400) {
         const sc = tiles[p.tileId];
         if (!sc) continue;
-        const cpt = centroid(sc.pts.map(worldToScreen));
+        const spts = sc.pts.map(worldToScreen);
+        const r = Math.max(2, inradius(spts) * 0.6);
         ctx.globalAlpha = 1 - elapsed/400;
-        drawPiece(ctx, p, cpt);
+        drawPiece(ctx, p, centroid(spts), r);
         ctx.globalAlpha = 1;
       }
       continue;
     }
     const t = tiles[p.tileId];
     if (!t) continue;
-    drawPiece(ctx, p, centroid(t.pts.map(worldToScreen)));
+    const spts = t.pts.map(worldToScreen);
+    drawPiece(ctx, p, centroid(spts), Math.max(2, inradius(spts) * 0.6));
   }
 
   if (pieces.some(p=>p.captured && (now-p.captureFlash)<400)) {
@@ -541,8 +537,7 @@ function drawBoard() {
   }
 }
 
-function drawPiece(ctx, p, pos) {
-  const r = Math.max(4, transform.s * 0.12);
+function drawPiece(ctx, p, pos, r) {
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, r, 0, 2*Math.PI);
   ctx.fillStyle = teamColor(p.team);
@@ -551,7 +546,7 @@ function drawPiece(ctx, p, pos) {
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.fillStyle='#111';
-  ctx.font = `bold ${Math.max(6,r*0.9)}px monospace`;
+  ctx.font = `bold ${Math.max(5, Math.min(r*1.1, 14))}px monospace`;
   ctx.textAlign='center';
   ctx.textBaseline='middle';
   ctx.fillText(p.type==='Scout'?'S':p.type==='Soldier'?'K':'G', pos.x, pos.y);
