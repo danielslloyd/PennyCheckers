@@ -73,6 +73,16 @@ canvas { display: block; }
         <option value="6" selected>~3800 tiles</option>
       </select>
     </div>
+    <div class="setting-row">
+      <label for="sel-pieces">Pieces per side</label>
+      <select id="sel-pieces">
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="8" selected>8</option>
+        <option value="12">12</option>
+        <option value="16">16</option>
+      </select>
+    </div>
     <div class="setting-note">Takes effect on next new game.</div>
     <div class="setting-row" style="margin-top:10px;">
       <label for="chk-graph">Show adjacency graph</label>
@@ -150,9 +160,45 @@ function makeSun() {
   return tiles;
 }
 
+function mergeTiling(halfTiles) {
+  const EPS5 = 1e-5;
+  function eKey(p,q) {
+    const [a,b] = p.x < q.x || (Math.abs(p.x-q.x)<EPS5 && p.y<q.y) ? [p,q] : [q,p];
+    return `${a.x.toFixed(5)},${a.y.toFixed(5)}|${b.x.toFixed(5)},${b.y.toFixed(5)}`;
+  }
+  const edgeMap = new Map();
+  for (const t of halfTiles) {
+    for (let i = 0; i < t.pts.length; i++) {
+      const key = eKey(t.pts[i], t.pts[(i+1)%t.pts.length]);
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(t.id);
+    }
+  }
+  const used = new Set();
+  const result = [];
+  for (const ids of edgeMap.values()) {
+    if (ids.length !== 2) continue;
+    const t0 = halfTiles[ids[0]], t1 = halfTiles[ids[1]];
+    if (t0.type !== t1.type || used.has(t0.id) || used.has(t1.id)) continue;
+    const ptEq = (a,b) => Math.hypot(a.x-b.x, a.y-b.y) < 1e-8;
+    const u0i = t0.pts.findIndex(p => t1.pts.every(q => !ptEq(p,q)));
+    const u1  = t1.pts.find(p => t0.pts.every(q => !ptEq(p,q)));
+    if (u0i === -1 || !u1) continue;
+    const u0=t0.pts[u0i], s0=t0.pts[(u0i+1)%3], s1=t0.pts[(u0i+2)%3];
+    result.push({type:t0.type, pts:[u0, s0, u1, s1]});
+    used.add(t0.id); used.add(t1.id);
+  }
+  for (const t of halfTiles) {
+    if (!used.has(t.id)) result.push({type:t.type, pts:t.pts});
+  }
+  return result;
+}
+
 function generateTiling(iters) {
   let tiles = makeSun();
   for (let i = 0; i < iters; i++) tiles = deflate(tiles);
+  tiles.forEach((t,i) => t.id = i);
+  tiles = mergeTiling(tiles);
   tiles.forEach((t,i) => t.id = i);
   return tiles;
 }
@@ -187,11 +233,27 @@ function buildGraph(tiles) {
 //  Helpers
 // ══════════════════════════════════════════════════════
 function centroid(pts){ return {x:pts.reduce((s,p)=>s+p.x,0)/pts.length, y:pts.reduce((s,p)=>s+p.y,0)/pts.length}; }
-function sign(px,py,a,b){ return (px-b.x)*(a.y-b.y)-(a.x-b.x)*(py-b.y); }
-function pointInTri(px,py,pts) {
-  const [a,b,c]=pts;
-  const d1=sign(px,py,a,b),d2=sign(px,py,b,c),d3=sign(px,py,c,a);
-  return !((d1<0||d2<0||d3<0)&&(d1>0||d2>0||d3>0));
+// Ray-casting hit-test — works for triangles, quads, and concave polygons (darts).
+function pointInPoly(px,py,pts) {
+  let inside = false;
+  for (let i=0, j=pts.length-1; i<pts.length; j=i++) {
+    const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+    if (((yi>py) !== (yj>py)) && (px < (xj-xi)*(py-yi)/(yj-yi)+xi)) inside = !inside;
+  }
+  return inside;
+}
+// Minimum distance from centroid to any edge — works as "inradius" for any polygon.
+function tileRadius(pts) {
+  const c = centroid(pts);
+  let minD = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const A=pts[i], B=pts[(i+1)%pts.length];
+    const dx=B.x-A.x, dy=B.y-A.y, lenSq=dx*dx+dy*dy;
+    if (lenSq < 1e-12) continue;
+    const t = Math.max(0, Math.min(1, ((c.x-A.x)*dx+(c.y-A.y)*dy)/lenSq));
+    minD = Math.min(minD, Math.hypot(c.x-A.x-t*dx, c.y-A.y-t*dy));
+  }
+  return isFinite(minD) ? minD : 0;
 }
 
 // ══════════════════════════════════════════════════════
@@ -209,13 +271,19 @@ let tileOwnership = new Map();
 let currentTurn = 1;
 let deflateIters = 6;
 let showGraph = false;
+let piecesPerSide = 8;
 
-const PIECE_TYPES = [
-  {type:'Scout',  steps:3},
-  {type:'Scout',  steps:3},
-  {type:'Soldier',steps:2},
-  {type:'Guard',  steps:1},
-];
+// Build piece roster: ~half Scouts, ~quarter Soldiers, ~quarter Guards.
+function makePieceTypes(n) {
+  const scouts   = Math.max(1, Math.round(n * 0.5));
+  const soldiers = Math.max(1, Math.round(n * 0.25));
+  const guards   = Math.max(1, n - scouts - soldiers);
+  const types = [];
+  for (let i=0;i<scouts;i++)   types.push({type:'Scout',   steps:3});
+  for (let i=0;i<soldiers;i++) types.push({type:'Soldier', steps:2});
+  for (let i=0;i<guards;i++)   types.push({type:'Guard',   steps:1});
+  return types;
+}
 
 function teamColor(team){ return team==='A' ? '#f0c040' : '#40c0c0'; }
 function teamName(team){ return team==='A' ? 'Gold' : 'Teal'; }
@@ -237,15 +305,16 @@ function placePieces() {
     return ids;
   }
 
-  const aTiles = pickSpread(aPool, 4);
-  const bTiles = pickSpread(bPool, 4);
+  const pieceTypes = makePieceTypes(piecesPerSide);
+  const aTiles = pickSpread(aPool, pieceTypes.length);
+  const bTiles = pickSpread(bPool, pieceTypes.length);
 
   pieces = [];
   let pid = 0;
-  PIECE_TYPES.forEach((p,i) => {
+  pieceTypes.forEach((p,i) => {
     pieces.push({id:pid++, team:'A', type:p.type, steps:p.steps, tileId:aTiles[i], captured:false, captureFlash:0});
   });
-  PIECE_TYPES.forEach((p,i) => {
+  pieceTypes.forEach((p,i) => {
     pieces.push({id:pid++, team:'B', type:p.type, steps:p.steps, tileId:bTiles[i], captured:false, captureFlash:0});
   });
   tileOwnership.clear();
@@ -274,36 +343,19 @@ function getReachable(tileId, maxSteps) {
   return result;
 }
 
-// ── Capture check ─────────────────────────────────────
-function checkCaptures() {
-  const captured = [];
-  for (const p of pieces) {
-    if (p.captured) continue;
-    const neighbors = adj.get(p.tileId);
-    if (!neighbors) continue;
-    const total = neighbors.size;
-    let enemyCount = 0;
-    for (const nb of neighbors) {
-      const occ = pieces.find(q => !q.captured && q.tileId === nb);
-      if (occ && occ.team !== p.team) enemyCount++;
-    }
-    if (enemyCount > total / 2) captured.push(p);
-  }
-  return captured;
-}
-
-// ── Move execution ────────────────────────────────────
+// ── Move execution (collision capture: landing on an enemy removes it) ────────
 function executeMove(piece, destTileId) {
-  piece.tileId = destTileId;
-  tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
-
-  const captured = checkCaptures();
+  // Capture any enemy pieces already on the destination tile
+  const captured = pieces.filter(q => !q.captured && q.team !== piece.team && q.tileId === destTileId);
   const captureDesc = [];
   for (const cp of captured) {
     cp.captured = true;
     cp.captureFlash = Date.now();
-    captureDesc.push(`${teamName(cp.team)} ${cp.type} #${cp.tileId}`);
+    captureDesc.push(`${teamName(cp.team)} ${cp.type}`);
   }
+
+  piece.tileId = destTileId;
+  tileOwnership.set(destTileId, {team: piece.team, turnSet: currentTurn});
 
   let entry = `T${currentTurn} · <span class="${teamClass(piece.team)}">${teamName(piece.team)} ${piece.type}</span> → #${destTileId}`;
   if (captureDesc.length) entry += `<br><span class="capture"> ✕ ${captureDesc.join(', ')}</span>`;
@@ -332,18 +384,19 @@ function showWin(team) {
 // ── AI ────────────────────────────────────────────────
 function evalMove(piece, destId) {
   const origTile = piece.tileId;
+  // Immediate captures: enemies sitting on destination
+  const capEnemy = pieces.filter(q => !q.captured && q.team !== piece.team && q.tileId === destId).length;
+  // Simulate move to evaluate resulting board
   piece.tileId = destId;
-  const captured = checkCaptures();
-  const capEnemy = captured.filter(p=>p.team==='A').length;
+  // Pieces of ours adjacent to an enemy (threatened — enemy can land on us next turn)
   const ownVuln = pieces.filter(p=>!p.captured&&p.team==='B').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
-    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='A')ec++; }
-    return ec>nb.size/2;
+    return [...nb].some(nid=>pieces.find(q=>!q.captured&&q.team==='A'&&q.tileId===nid));
   }).length;
+  // Enemy pieces adjacent to one of ours (we can threaten them next turn)
   const enVuln = pieces.filter(p=>!p.captured&&p.team==='A').filter(p=>{
     const nb=adj.get(p.tileId); if(!nb) return false;
-    let ec=0; for(const n of nb){ const o=pieces.find(q=>!q.captured&&q.tileId===n); if(o&&o.team==='B')ec++; }
-    return ec>nb.size/2;
+    return [...nb].some(nid=>pieces.find(q=>!q.captured&&q.team==='B'&&q.tileId===nid));
   }).length;
   piece.tileId = origTile;
   return {capEnemy, ownVuln, enVuln};
@@ -384,7 +437,7 @@ function handleClick(sx, sy) {
   const wp = screenToWorld({x:sx,y:sy});
   let clickedTile = null;
   for (let i=tiles.length-1;i>=0;i--) {
-    if (pointInTri(wp.x,wp.y,tiles[i].pts)) { clickedTile=tiles[i]; break; }
+    if (pointInPoly(wp.x,wp.y,tiles[i].pts)) { clickedTile=tiles[i]; break; }
   }
   if (!clickedTile) return;
   const tid = clickedTile.id;
@@ -516,7 +569,7 @@ function drawBoard() {
     }
   }
 
-  // Draw pieces
+  // Draw pieces — radius = 60% of tile's inscribed circle radius
   const now = Date.now();
   for (const p of pieces) {
     if (p.captured) {
@@ -524,16 +577,18 @@ function drawBoard() {
       if (elapsed < 400) {
         const sc = tiles[p.tileId];
         if (!sc) continue;
-        const cpt = centroid(sc.pts.map(worldToScreen));
+        const spts = sc.pts.map(worldToScreen);
+        const r = Math.max(2, tileRadius(spts) * 0.6);
         ctx.globalAlpha = 1 - elapsed/400;
-        drawPiece(ctx, p, cpt);
+        drawPiece(ctx, p, centroid(spts), r);
         ctx.globalAlpha = 1;
       }
       continue;
     }
     const t = tiles[p.tileId];
     if (!t) continue;
-    drawPiece(ctx, p, centroid(t.pts.map(worldToScreen)));
+    const spts = t.pts.map(worldToScreen);
+    drawPiece(ctx, p, centroid(spts), Math.max(2, tileRadius(spts) * 0.6));
   }
 
   if (pieces.some(p=>p.captured && (now-p.captureFlash)<400)) {
@@ -541,8 +596,7 @@ function drawBoard() {
   }
 }
 
-function drawPiece(ctx, p, pos) {
-  const r = Math.max(4, transform.s * 0.12);
+function drawPiece(ctx, p, pos, r) {
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, r, 0, 2*Math.PI);
   ctx.fillStyle = teamColor(p.team);
@@ -551,7 +605,7 @@ function drawPiece(ctx, p, pos) {
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.fillStyle='#111';
-  ctx.font = `bold ${Math.max(6,r*0.9)}px monospace`;
+  ctx.font = `bold ${Math.max(5, Math.min(r*1.1, 14))}px monospace`;
   ctx.textAlign='center';
   ctx.textBaseline='middle';
   ctx.fillText(p.type==='Scout'?'S':p.type==='Soldier'?'K':'G', pos.x, pos.y);
@@ -653,9 +707,12 @@ window.addEventListener('load', () => {
     }
   });
 
-  // Tile density (takes effect on next new game)
+  // Tile density and piece count (take effect on next new game)
   document.getElementById('sel-iters').addEventListener('change', e => {
     deflateIters = parseInt(e.target.value);
+  });
+  document.getElementById('sel-pieces').addEventListener('change', e => {
+    piecesPerSide = parseInt(e.target.value);
   });
 
   // Graph overlay toggle (instant)

@@ -121,9 +121,48 @@ function makeSun() {
   return tiles;
 }
 
+// Merge adjacent same-type half-tile triangles into full kite/dart quads.
+// Each full kite = 2 acute halves sharing their spine; same for darts.
+// Boundary triangles that have no same-type partner are kept as-is.
+function mergeTiling(halfTiles) {
+  const EPS5 = 1e-5;
+  function eKey(p,q) {
+    const [a,b] = p.x < q.x || (Math.abs(p.x-q.x)<EPS5 && p.y<q.y) ? [p,q] : [q,p];
+    return `${a.x.toFixed(5)},${a.y.toFixed(5)}|${b.x.toFixed(5)},${b.y.toFixed(5)}`;
+  }
+  const edgeMap = new Map();
+  for (const t of halfTiles) {
+    for (let i = 0; i < t.pts.length; i++) {
+      const key = eKey(t.pts[i], t.pts[(i+1)%t.pts.length]);
+      if (!edgeMap.has(key)) edgeMap.set(key, []);
+      edgeMap.get(key).push(t.id);
+    }
+  }
+  const used = new Set();
+  const result = [];
+  for (const ids of edgeMap.values()) {
+    if (ids.length !== 2) continue;
+    const t0 = halfTiles[ids[0]], t1 = halfTiles[ids[1]];
+    if (t0.type !== t1.type || used.has(t0.id) || used.has(t1.id)) continue;
+    const ptEq = (a,b) => Math.hypot(a.x-b.x, a.y-b.y) < 1e-8;
+    const u0i = t0.pts.findIndex(p => t1.pts.every(q => !ptEq(p,q)));
+    const u1  = t1.pts.find(p => t0.pts.every(q => !ptEq(p,q)));
+    if (u0i === -1 || !u1) continue;
+    const u0=t0.pts[u0i], s0=t0.pts[(u0i+1)%3], s1=t0.pts[(u0i+2)%3];
+    result.push({type:t0.type, pts:[u0, s0, u1, s1]});
+    used.add(t0.id); used.add(t1.id);
+  }
+  for (const t of halfTiles) {
+    if (!used.has(t.id)) result.push({type:t.type, pts:t.pts});
+  }
+  return result;
+}
+
 function generateTiling(iters) {
   let tiles = makeSun();
   for (let i = 0; i < iters; i++) tiles = deflate(tiles);
+  tiles.forEach((t,i) => t.id = i);
+  tiles = mergeTiling(tiles);
   tiles.forEach((t,i) => t.id = i);
   return tiles;
 }
@@ -263,17 +302,20 @@ function resize() {
   }
 }
 
-function sign(px,py,a,b){ return (px-b.x)*(a.y-b.y)-(a.x-b.x)*(py-b.y); }
-function pointInTri(px,py,pts) {
-  const [a,b,c]=pts;
-  const d1=sign(px,py,a,b),d2=sign(px,py,b,c),d3=sign(px,py,c,a);
-  return !((d1<0||d2<0||d3<0)&&(d1>0||d2>0||d3>0));
+// Ray-casting point-in-polygon — works for triangles, quads, and concave polys.
+function pointInPoly(px,py,pts) {
+  let inside = false;
+  for (let i=0, j=pts.length-1; i<pts.length; j=i++) {
+    const xi=pts[i].x, yi=pts[i].y, xj=pts[j].x, yj=pts[j].y;
+    if (((yi>py) !== (yj>py)) && (px < (xj-xi)*(py-yi)/(yj-yi)+xi)) inside = !inside;
+  }
+  return inside;
 }
 
 function getTileAt(sx,sy) {
   const wp = screenToWorld({x:sx,y:sy});
   for (let i=tiles.length-1;i>=0;i--) {
-    if (pointInTri(wp.x,wp.y,tiles[i].pts)) return tiles[i];
+    if (pointInPoly(wp.x,wp.y,tiles[i].pts)) return tiles[i];
   }
   return null;
 }
