@@ -135,21 +135,21 @@ function mergeTiling(halfTiles) {
     for (let i = 0; i < t.pts.length; i++) {
       const key = eKey(t.pts[i], t.pts[(i+1)%t.pts.length]);
       if (!edgeMap.has(key)) edgeMap.set(key, []);
-      edgeMap.get(key).push(t.id);
+      edgeMap.get(key).push({id: t.id, vi: i, vj: (i+1)%t.pts.length});
     }
   }
   const used = new Set();
   const result = [];
-  for (const ids of edgeMap.values()) {
-    if (ids.length !== 2) continue;
-    const t0 = halfTiles[ids[0]], t1 = halfTiles[ids[1]];
+  for (const entries of edgeMap.values()) {
+    if (entries.length !== 2) continue;
+    const [e0, e1] = entries;
+    const t0 = halfTiles[e0.id], t1 = halfTiles[e1.id];
     if (t0.type !== t1.type || used.has(t0.id) || used.has(t1.id)) continue;
-    const ptEq = (a,b) => Math.hypot(a.x-b.x, a.y-b.y) < 1e-8;
-    const u0i = t0.pts.findIndex(p => t1.pts.every(q => !ptEq(p,q)));
-    const u1  = t1.pts.find(p => t0.pts.every(q => !ptEq(p,q)));
-    if (u0i === -1 || !u1) continue;
-    const u0=t0.pts[u0i], s0=t0.pts[(u0i+1)%3], s1=t0.pts[(u0i+2)%3];
-    result.push({type:t0.type, pts:[u0, s0, u1, s1]});
+    const u0i = 3 - e0.vi - e0.vj;
+    const u1i = 3 - e1.vi - e1.vj;
+    const u0 = t0.pts[u0i], u1 = t1.pts[u1i];
+    const s0 = t0.pts[(u0i+1)%3], s1 = t0.pts[(u0i+2)%3];
+    result.push({type: t0.type, pts: [u0, s0, u1, s1]});
     used.add(t0.id); used.add(t1.id);
   }
   for (const t of halfTiles) {
